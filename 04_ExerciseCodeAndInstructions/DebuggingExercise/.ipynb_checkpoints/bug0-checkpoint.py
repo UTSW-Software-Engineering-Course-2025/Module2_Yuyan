@@ -3,7 +3,11 @@ def fReplaceText(strInput, strText, intStart, intStop):
     """
     Replace the text between intStart and intStop with strText
     """
-    return strInput[:intStart] + strText + strInput[intStop:]
+    #copy the string
+    strReturn = strInput[:]
+    #update the section of the string with inputted text
+    strReturn[intStart:intStop] = strText
+    return strReturn
 
 def fFindAndReplaceInStr(strInput, strOld, strNew):
     """
@@ -11,9 +15,7 @@ def fFindAndReplaceInStr(strInput, strOld, strNew):
     """
     intLenOld = len(strOld)
     intStart = strInput.find(strOld)
-    if intStart == -1:
-        return strInput  # If strOld not found, return original
-    return fReplaceText(strInput, strNew, intStart, intStart+intLenOld)
+    fReplaceText(strInput, strNew, intStart, intStart+intLenOld)
 
 
 #fix famous misquote
