@@ -49,7 +49,8 @@ class MyImgClass():
         :rtype: MyImgClass
         """
         ### TO IMPLEMENT ###
-        raise NotImplementedError('You need to implement this method!')
+        toReturn = MyImgClass(np.subtract(self.arrImg, other.arrImg), intLabel=None)
+        return toReturn
         
     
     def fPixelwiseSqDif(self, other):
@@ -61,8 +62,9 @@ class MyImgClass():
         :rtype: MyImgClass
         """
         ### TO IMPLEMENT ###
-        # Use the overloaded '-' from above
-        raise NotImplementedError('You need to implement this method!')
+        diff = self - other  # uses the overloaded __sub__
+        squared_diff = np.square(diff.arrImg)
+        return MyImgClass(squared_diff, intLabel=None)
     
     
     
@@ -75,8 +77,12 @@ class MyImgClass():
         :rtype: float
         """
         ### TO IMPLEMENT ###
-        raise NotImplementedError('You need to implement this method!')
+        diff = self - other
 
+        # Square the differences and compute the mean
+        mse = np.mean(np.square(diff.arrImg))
+    
+        return mse
     
     def fPlot(self, ax, show_ticks=False, add_colorbar=False, imshow_kwargs={}):
         """Plotting method for the class
@@ -110,8 +116,9 @@ class MyImgClass():
         :return: The mean image
         :rtype: MyImgClass
         """
-        ### TO IMPLEMENT ###
-        raise NotImplementedError('You need to implement this method!')
+        all_imgs = np.stack([img.arrImg for img in lMyImgClass], axis=0)
+        mean_img = np.mean(all_imgs, axis=0)
+        return MyImgClass(mean_img, intLabel=None)
     
     @staticmethod
     def fComputeStdAcrossImages(lMyImgClass):
@@ -122,9 +129,9 @@ class MyImgClass():
         :return: The std image
         :rtype: MyImgClass
         """
-        ### TO IMPLEMENT ###
-        raise NotImplementedError('You need to implement this method!')
-        
+        all_imgs = np.stack([img.arrImg for img in lMyImgClass], axis=0)
+        std_img = np.std(all_imgs, axis=0)
+        return MyImgClass(std_img, intLabel=None)
 
     @staticmethod
     def fMeanMSE(lImg1, lImg2):
@@ -138,9 +145,9 @@ class MyImgClass():
         :return: mean MSE
         :rtype: float
         """
-        ### TO IMPLEMENT ###
-        raise NotImplementedError('You need to implement this method!')
-
+        assert len(lImg1) == len(lImg2), "Image lists must be the same length"
+        mses = [img1.fMSE(img2) for img1, img2 in zip(lImg1, lImg2)]
+        return np.mean(mses)
 
     @staticmethod
     def fMSEforEachPairCombination(lImg1, lImg2):

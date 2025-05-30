@@ -32,11 +32,9 @@ def sample_from_normal(dist_mean, dist_logvar):
     # HINT: See the lecture notes and use tf.random.normal  and tf.exp
     # Store the result in sampledZ so it can be returned.
     # 
-
+    z = tf.random.normal(shape=tf.shape(dist_mean))
+    sampledZ = dist_mean + tf.exp(0.5 * dist_logvar) * z
     # ========================   
-    epsilon = tf.random.normal(shape=tf.shape(dist_mean))
-    std = tf.exp(0.5 * dist_logvar)
-    sampledZ = dist_mean + std * epsilon
     return sampledZ
 
 def kl_divergence(dist_mean, dist_logvar):
@@ -57,29 +55,51 @@ def kl_divergence(dist_mean, dist_logvar):
     # Hint see the lecture notes. tf.square, tf.reduce_sum, tf.reduce_mean, tf.exp may be helful
 
     # 1. First compute the KL divergence within each sample. 
+    kl = -0.5 * (1 + dist_logvar - tf.square(dist_mean) - tf.exp(dist_logvar))
 
     # 2. Next, Sum the KL divergence within each sample
-    
-    # 3. Finally compute the mean KL divergence over all samples, and returen the result in divKL_AllSamples
+    kl_per_sample = tf.reduce_sum(kl, axis=1)
+
+    # 3. Finally compute the mean KL divergence over all samples, and return the result in divKL_AllSamples
     # e.g.  divKL_AllSamples=.... 
+    divKL_AllSamples=tf.reduce_mean(kl_per_sample)
 
 
     # ========================    
-    kl_per_dim = -0.5 * (1 + dist_logvar - tf.square(dist_mean) - tf.exp(dist_logvar))
-    kl_per_sample = tf.reduce_sum(kl_per_dim, axis=1)  # Sum over latent dimensions
-    divKL_AllSamples = tf.reduce_mean(kl_per_sample)   # Mean over all samples in batch
 
     return divKL_AllSamples
 
 class Encoder(tf.keras.Model):
     
-    def __init__(self,
+    def __init__(self,               
+                 conv_layer_units = [16,32,64,64],
+                 conv_layer_kernel_size = [4,4,4,4],
+                 conv_layer_strides = [(1,1), (2,2), (2,2), (2,2)],
+                 conv_layer_activation_function = ['relu','relu','relu','relu'],
+                 encoder_dense_layer_units = [128],
+                 decoder_dense_layer_units = [],
                  n_latent_dims=8,
                  name='encoder',
                  **kwargs):
         """Convolutional encoder which compresses an image into a probabilistic 
         latent representation.
 
+        Structure:
+
+        HPO options:
+        - Num conv layers
+            - num neurons per layer
+            - kernel size per layer
+            - stride per layer
+            - Activation function per laeyr
+                - default ReLU
+                    - other options: https://www.tensorflow.org/api_docs/python/tf/keras/activations
+
+        - Num dense layers
+            - num dense layer units per layer
+        - num latent dims
+
+        
         Args:
             n_latent_dims (int, optional): Length of the latent representation. 
                 Defaults to 8.
@@ -90,42 +110,25 @@ class Encoder(tf.keras.Model):
         super(Encoder, self).__init__(name=name, **kwargs)
         
         self.n_latent_dims = n_latent_dims
-        
-        # Define layers. Let d x d be the dimensions of the input image. 
+        self.n_conv_layers = len(conv_layer_units)
+        self.encoder_layers = []
 
-        # Each convolution layer uses 4 x 4 kernels, and the number of filters
-        # per layer comes from the filters_per_layer argument.
-        self.conv0 = tkl.Conv2D(16, 4, padding='same', name='conv0')
-        self.bn0 = tkl.BatchNormalization(name='bn0')
-        self.relu0 = tkl.ReLU(name='relu0')
-        # Since the padding of the convolutional layer was 'same' and there was
-        # no striding or pooling, the output of this block should still be d x d.
+        # Conv layer blocks
+        for i in range( self.n_conv_layers ):
+            self.encoder_layers += [tkl.Conv2D(conv_layer_units[i], conv_layer_kernel_size[i], padding = 'same', 
+                                       strides = conv_layer_strides[i], name = f"conv{i}")]
+            self.encoder_layers += [tkl.BatchNormalization(name=f'bn{i}')]
+            self.encoder_layers += [tkl.Activation(conv_layer_activation_function[i],name=f'{conv_layer_activation_function[i]}{i}')]
+            
+        # Flatten 2D output into a vector, then apply dense layer(s)
+        self.encoder_layers += [tkl.Flatten(name='flatten')]
         
-        self.conv1 = tkl.Conv2D(32, 4, padding='same', strides=(2, 2), name='conv1')
-        self.bn1 = tkl.BatchNormalization(name='bn1')
-        self.relu1 = tkl.ReLU(name='relu1')
-        # Applying convolution with a stride of 2 results in an output size of
-        # (d/2) x (d/2).
-        
-        self.conv2 = tkl.Conv2D(64, 4, padding='same', strides=(2, 2), name='conv2')
-        self.bn2 = tkl.BatchNormalization(name='bn2')
-        self.relu2 = tkl.ReLU(name='relu2')
-        # (d/4) x (d/4)
-        
-        self.conv3 = tkl.Conv2D(64, 4, padding='same', strides=(2, 2), name='conv3')
-        self.bn3 = tkl.BatchNormalization(name='bn3')
-        self.relu3 = tkl.ReLU(name='relu3')
-        # (d/8) x (d/8)
-        
-        # Flatten 2D output into a vector, then apply dense layer
-        self.flatten = tkl.Flatten(name='flatten')
-        self.dense = tkl.Dense(128, name='dense')
-        
-        # Dense layers to output the variational mean and log-variance
+        # Dense Layer blocks
+        for i in range(len(encoder_dense_layer_units)):
+            self.encoder_layers += [tkl.Dense(encoder_dense_layer_units[i],name = f"dense{i}")]
+                
+        # Dense Latent dim layers to output the variational mean and log-variance
         self.dense_mean = tkl.Dense(self.n_latent_dims, name='dense_mean')
-        # Initializing the weights of the log-variance layer at zero seems to
-        # improve numerical stability and prevent the KL divergence from blowing
-        # up. 
         self.dense_logvar = tkl.Dense(self.n_latent_dims, kernel_initializer='zeros', 
                                       name='dense_logvar')       
         
@@ -160,58 +163,11 @@ class Encoder(tf.keras.Model):
         more training data. During testing, it uses the learned mean and s.d.
         without updating it.
         '''
-        
-
-        # here we implement the encoder's forward pass using the layers defined in the __init__()
-        # Recall that the encoder reduces the input image to a lower dimensional latent represention
-        # In this case it that representation is in the form of a mean and log variance of the distribution 
-        # of likely z's (likely latent representations of the input image)
-        #
-        # You are given a minibatch of input images stored in the variable: inputs. So that is where you should start.
-        # Recall that our pattern is convolution then batchnormalize adn then activation function (eg. relu).
-        #
-        # In a VAE, the encoder mirrors the decoder, ie they both have the same number of layers and weights/layer.
-
-        # First block: images --> convolution --> batch normalize  --> relu  --> x
-        # 1. Use the self.conv0() layer to extract image features from the images in the variable, inputs. Store the output in x.
-        # 2. Use the self.bn0() layer to normalize the next mini batch of training images x and the training labels in the variable training. Store the output in x.
-        # 3. Then transform x by applying the relu0() layer. Have it take in x from the previous step. Store the output again in x. This way we update x  and learn a dense NN layer 
-        x = self.conv0(inputs)
-        x = self.bn0(x, training=training)
-        x = self.relu0(x)
-        
-        # Second block: x --> conv1 --> bn1 --> relu1  --> x
-        # 1. Use the self.conv1() layer to extract image features from x that are predictive of authenticity (real vs fake) and class label. Store the output in x
-        # 2. Use the self.bn1() layer to normalize the next mini batch of training images x and the training labels in the variable training. Store the output in x.
-        # 3. Use the relu1 layer to transform x by applying the RELU activation to x.  Store the output again in x.
-        x = self.conv1(x)
-        x = self.bn1(x, training=training)
-        x = self.relu1(x)
-        
-        # Third block: x --> conv2 --> bn2 --> relu2  --> x
-        # Otherwise similar to previous block 
-        x = self.conv2(x)
-        x = self.bn2(x, training=training)
-        x = self.relu2(x)
-
-        # Forth block: x --> conv2 --> bn2 --> relu2  --> x
-        # Otherwise similar to previous block 
-        x = self.conv3(x)
-        x = self.bn3(x, training=training)
-        x = self.relu3(x)
-        
-        # Fifth block: x --> flatten --> dense --> x
-        # 1. Use the flatten() layer to flatten the tensor of image features in x to a vector.  Store the output in x
-        # 2. use the dense() layer to apply a dense NN layer that learns the combinations of elements in x that are predictive of the distribution of z's that represent our input image.  Store the output in x      
-        x = self.flatten(x)
-        x = self.dense(x)
-        
-        # Sixth block: 
-        # 1. use dense_mean() layer to apply a dense NN layer that learns the combinations of elements in x that are predictive of the mean of the z distrubion for our input image. store the result in z_mean.
-        # 2. use dense_logvar() layer to apply a dense NN layer that learns the combinations of elements in x that are predictive of the log variance for our input image. store the result in z_logvar.
+        x = inputs
+        for layer in self.encoder_layers:
+            x = layer(x, training = training)
         z_mean = self.dense_mean(x)
         z_logvar = self.dense_logvar(x)
-
 
         return z_mean, z_logvar
     
@@ -232,6 +188,12 @@ class Encoder(tf.keras.Model):
 class Decoder(tf.keras.Model):
     
     def __init__(self,
+                 conv_layer_units = [16,32,64,64],
+                 conv_layer_kernel_size = [4,4,4,4],
+                 conv_layer_strides = [(1,1), (2,2), (2,2), (2,2)],
+                 conv_layer_activation_function = ['relu','relu','relu','relu'],
+                 encoder_dense_layer_units = [128],
+                 decoder_dense_layer_units = [],
                  image_shape=(32, 32, 1),
                  name='decoder',
                  **kwargs):
@@ -276,40 +238,33 @@ class Decoder(tf.keras.Model):
         
         '''
         
-        n_encoder_last_filters = 64 # Number of filters in the encoder's last convolutional layer
-        n_encoder_strided_layers = 3
+        n_encoder_last_filters = conv_layer_units[-1] # Number of filters in the encoder's last convolutional layer
+        n_encoder_strided_layers = sum([strides != (1,1) for strides in conv_layer_strides])
         first_conv_input_shape = (self.image_shape[0] // (2 ** n_encoder_strided_layers),
                                   self.image_shape[1] // (2 ** n_encoder_strided_layers),
                                   n_encoder_last_filters)
         
         dense_neurons = np.prod(first_conv_input_shape)
         
-        self.dense = tkl.Dense(dense_neurons, name='dense')
-        self.relu_dense = tkl.ReLU(name='relu_dense')
-        # Reshape from 1D to 3D
-        self.reshape = tkl.Reshape(first_conv_input_shape, name='reshape')
-        # (d/8) x (d/8)
+        self.decoder_layers = []
+        # Dense Layer blocks
+        # Fill layers in reverse so same list can be used for encoder
+        for i in range(len(decoder_dense_layer_units)-1, -1, -1):
+            self.decoder_layers += [tkl.Dense(decoder_dense_layer_units[i],name = f"dense{i}")]
+            self.decoder_layers += [tkl.ReLU(name=f'relu{i}')]
+
+        # Reshape
+        self.decoder_layers += [tkl.Dense(dense_neurons, name='dense_to_conv', activation = 'relu')]
+        self.decoder_layers += [tkl.Reshape(first_conv_input_shape, name='reshape')]
         
-        # To do the opposite of the convolutions in the encoder, we use transposed convolutions. 
-        self.tconv0 = tkl.Conv2DTranspose(64, 4, strides=(2, 2), padding='same', name='tconv0')
-        self.bn0 = tkl.BatchNormalization(name='bn0')
-        self.relu0 = tkl.ReLU(name='relu0')
-        # (d/4) x (d/4)
-        
-        self.tconv1 = tkl.Conv2DTranspose(64, 4, strides=(2, 2), padding='same', name='tconv1')
-        self.bn1 = tkl.BatchNormalization(name='bn1')
-        self.relu1 = tkl.ReLU(name='relu1')
-        # (d/2) x (d/2)
-        
-        self.tconv2 = tkl.Conv2DTranspose(32, 4, strides=(2, 2), padding='same', name='tconv2')
-        self.bn2 = tkl.BatchNormalization(name='bn2')
-        self.relu2 = tkl.ReLU(name='relu2')
-        # d x d
-        
-        self.tconv3 = tkl.Conv2DTranspose(16, 4, padding='same', name='tconv3')
-        self.bn3 = tkl.BatchNormalization(name='bn3')
-        self.relu3 = tkl.ReLU(name='relu3')
-        
+        # Conv layer blocks
+        # Fill layers in reverse so same list can be used for encoder
+        for i in range(len(conv_layer_units)-1, -1, -1):
+            self.decoder_layers += [tkl.Conv2DTranspose(conv_layer_units[i], conv_layer_kernel_size[i], padding = 'same', 
+                                       strides = conv_layer_strides[i], name = f"tconv{i}")]
+            self.decoder_layers += [tkl.BatchNormalization(name=f'bn{i}')]
+            self.decoder_layers += [tkl.Activation(conv_layer_activation_function[i],name=f'{conv_layer_activation_function[i]}{i}')]
+                    
         # A final convolution layer with a sigmoid activation to produce the
         # output image. The number of filters should equal the number of color
         # channels in the image.
@@ -330,26 +285,10 @@ class Decoder(tf.keras.Model):
             tensor: reconstructed image
         """                             
         
-        x = self.dense(inputs)
-        x = self.relu_dense(x)
-        x = self.reshape(x)
-        
-        x = self.tconv0(x)
-        x = self.bn0(x, training=training)
-        x = self.relu0(x)
-        
-        x = self.tconv1(x)
-        x = self.bn1(x, training=training)
-        x = self.relu1(x)
-        
-        x = self.tconv2(x)
-        x = self.bn2(x, training=training)
-        x = self.relu2(x)
-        
-        x = self.tconv3(x)
-        x = self.bn3(x, training=training)
-        x = self.relu3(x)
-    
+        x = inputs
+        for layer in self.decoder_layers:
+            x = layer(x, training = training)
+  
         x = self.conv_out(x)
         x = self.sigmoid_out(x)
         
@@ -377,6 +316,8 @@ class VAE(tf.keras.Model):
                  image_shape=(32, 32, 1),
                  kl_loss_weight=1.,
                  name='vae', 
+                 encoder_params = {},
+                 decoder_params = {},
                  **kwargs):
         """Variational autoencoder-generative adversarial network. Contains a
         VAE which learns to compress and decompress an image and a
@@ -404,24 +345,26 @@ class VAE(tf.keras.Model):
         # 
         # 1. Call the base class init, passing it all of the relevant fields that it expects as arguments. 
         #    Hint its generally wise to pass through any misc arguments sent to the derived clas __init__() in kwargs  to the base class __init__().
-
+        super().__init__(name=name, **kwargs)
 
         # 2. Store the number of latent dimensions, image shape and kl loss weight in a member variable of the same name in the current (self) instance variable.
-
-
-
+        self.n_latent_dims = n_latent_dims
+        self.image_shape = image_shape
+        self.kl_loss_weight = kl_loss_weight
 
         # 3. VAE Has-a Encoder  
         #    VAE has-a Decoder 
         #    Therefore construct an Encoder instance and store it in self.encoder
         #              construct a Decoder instance and store it in self.decoder
         # 
-
-
+        self.encoder = Encoder(n_latent_dims=self.n_latent_dims, **encoder_params)
+        self.decoder = Decoder(image_shape=self.image_shape, **decoder_params)
+     
         # 4. Use the mean squared error as the reconstruction loss. Do not reduce
         # values (average over samples), return per-pixel values instead.   
         # Give it the name 'recon_mse'    
         # Therefore construct a tf.keras.losses.MeanSquaredError  and store the instance in self.loss_recon
+        self.loss_recon = tf.keras.losses.MeanSquaredError(name='recon_mse', reduction='none')
         
         # 5. Define some custom metrics to track the running means of each loss.
         # The values of these metrics will be printed in the progress bar with
@@ -430,25 +373,7 @@ class VAE(tf.keras.Model):
         #  tf.keras.metrics.Mean  with the name 'recon_loss' and store it in self.loss_recon_tracker
         #  tf.keras.metrics.Mean  with the name 'kl_loss' and store it in self.loss_kl_tracker
         #  tf.keras.metrics.Mean  with the name 'total_loss' and store it in self.loss_total_tracker
-        # 1. Call the base class constructor with all relevant arguments
-        super(VAE, self).__init__(name=name, **kwargs)
 
-        # 2. Store key parameters
-        self.n_latent_dims = n_latent_dims
-        self.image_shape = image_shape
-        self.kl_loss_weight = kl_loss_weight
-
-        # 3. Initialize encoder and decoder
-        self.encoder = Encoder(n_latent_dims=self.n_latent_dims)
-        self.decoder = Decoder(image_shape=self.image_shape)
-
-        # 4. Reconstruction loss (per-pixel MSE, not reduced)
-        self.loss_recon = tf.keras.losses.MeanSquaredError(
-            reduction=tf.keras.losses.Reduction.NONE,
-            name='recon_mse'
-        )
-
-        # 5. Metrics for tracking losses
         self.loss_recon_tracker = tf.keras.metrics.Mean(name='recon_loss')
         self.loss_kl_tracker = tf.keras.metrics.Mean(name='kl_loss')
         self.loss_total_tracker = tf.keras.metrics.Mean(name='total_loss')
@@ -457,22 +382,12 @@ class VAE(tf.keras.Model):
 
     def call(self, inputs, training=None):
 
-        # ===== ToImplement    Exercise3d  ====
+        # ===== ToImplement   [ Exercise3d ] ====
         # ========================        
-        # To give you some assistance we partailly did this one for you. 
-        # HOWEVER, note that below there are no program comments. What a lazy SWE!
-        # Since we need those to make our code maintainable, 
-        # study what this is doing and add comments explaining what each line is doing.
-        # Encode the input images into a latent distribution (mean and log variance)
+        # To give you some assistance we did this one fore you. Please study what this is doing and add comments after each line: 
         z_mean, z_logvar = self.encoder(inputs, training=training)
-    
-        # Sample a latent vector z from the learned distribution using the reparameterization trick
         z = sample_from_normal(z_mean, z_logvar)
-    
-        # Decode the sampled latent vector z to reconstruct the input image
         recons = self.decoder(z, training=training)
-    
-        # Return the reconstructed images
         return recons
     
     @property
@@ -496,67 +411,58 @@ class VAE(tf.keras.Model):
         """        
 
 
-        # ===== ToImplement   Exercise3e ====
+        # ===== ToImplement  Exercise3e ====
         # ========================         
         images_real = data  # Unpack any inputs. In this case we only have the predictors ie. the images since this is unsupervised
         
         # 1. Tell tensorflow to build a computational graph for the forward pass, so that gradients can be computed for us.
-        #    Therefore use tf.GradientTape(persistent=True) to start the beginning of a python runtime context using the "with" keyword.
-        #    Note the argument persistent=True is required to compute multiple gradients from a single GradientTape
-        with tf.GradientTape(persistent=True) as tape:
-        #      # === Beginning OF INDENTED BLOCK ===
-        #      Note: steps 2- 7 are indented and thus inside the context block 
-        #      2. Use encoder to predict probabilistic latent representations by invoking its forward pass, call, but do that indirectly through self.encoder
+        #    Therefore use tf.GradientTape(persistent=True) to start the beginning of a python context block
+        #    persistent=True is required to compute multiple gradients from a single GradientTape
+        with tf.GradientTape(persistent=True) as gt:
+            # Note: steps 2- 8 are indented and thus inside the context block 
+            # 2. Use encoder to predict probabilistic latent representations by invoking its forward pass, call, but do that indirectly through self.encoder
+            #    provide images_real and tell it that we are training  (training=True)
+            #    unpack the outputs into z_mean and z_logvar
             z_mean, z_logvar = self.encoder(images_real, training=True)
-        #         provide images_real and tell it that we are training  (training=True)
-        #         unpack the outputs into z_mean and z_logvar
-
-        #      3.Sample a point from the latent distributions.  Use your sample_from_normal() with the arguments of the mean and logvar returned from self.encoder
-        #        store the result in z
+            
+            # 3.Sample a point from the latent distributions.  Use your sample_from_normal() with the arguments of the mean and logvar returned from self.encoder
+            #   store the result in z
             z = sample_from_normal(z_mean, z_logvar)
-
-        #      4. Now Use decoder to reconstruct image by invoking its forward pass, call, but do taht indirectly through self.decoder
-        #         provide the sampled point as input and provide the argument training=True since this is a train_step
-        #         store the result in the  variable recons
+            
+            # 4. Now Use decoder to reconstruct image by invoking its forward pass, call, but do taht indirectly through self.decoder
+            #    provide the sampled point as input and provide the argument training=True since this is a train_step
+            #    store the result in the  variable recons
             recons = self.decoder(z, training=True)
-
-        #      5. Compute KL divergence loss between latent representations and the prior using your function kl_divergence() 
-        #         store the result in kl_loss
+            
+            # 5. Compute KL divergence loss between latent representations and the prior using your function kl_divergence() 
+            #    store the result in kl_loss
             kl_loss = kl_divergence(z_mean, z_logvar)
-        #    [ 6. ] Compute reconstruction loss
-        #        # To simplify we provide this code for you  (you need to uncomment it, but keep it indented):
-            recon_loss_pixel = self.loss_recon(images_real, recons)   # uncomment this line
-        #        # Recon loss is computed per pixel. Sum over the pixels and then
-        #        # average across samples.
-            recon_loss_sample = tf.reduce_sum(recon_loss_pixel, axis=(1, 2))  # uncomment this line
-            recon_loss = tf.reduce_mean(recon_loss_sample)  # uncomment this line
-
-        # #  [ 7. ] Sum the loss terms (we provide this code for you):
-            total_loss = recon_loss + self.kl_loss_weight * kl_loss  # uncomment this line
-        #        # === END OF INDENTED BLOCK ===
-
+            
+            # [ 6. ] Compute reconstruction loss
+            #    To simplify we provide this code for you:
+            recon_loss_pixel = self.loss_recon(images_real, recons)
+            # Recon loss is computed per pixel. Sum over the pixels and then
+            # average across samples.
+            recon_loss_sample = tf.reduce_sum(recon_loss_pixel, axis=(1, 2))
+            recon_loss = tf.reduce_mean(recon_loss_sample)
+            
+            #[  7. ] Sum the loss terms (we provide this code for you):
+            total_loss = recon_loss + self.kl_loss_weight * kl_loss
+                       
+                       
         # 8. Compute the gradients for each loss wrt their respectively model weights
         #    A) Use the gradient tape to compute the gradients for the encoder and store the results in grads_enc
-
+        grads_enc = gt.gradient(total_loss, self.encoder.trainable_weights)
         #    B) Use the gradient tape to compute the gradients for the dencoder and store the results in grads_dec
-        grads_enc = tape.gradient(total_loss, self.encoder.trainable_variables)
-        grads_dec = tape.gradient(total_loss, self.decoder.trainable_variables)
-
+        grads_dec = gt.gradient(total_loss, self.decoder.trainable_weights)
+        
         # 9. Apply the gradient descent steps to each submodel. The optimizer
         # attribute is created when model.compile(optimizer) is called by the
         # user.
         # A) First apply the gradient to the encoder. use self.optimizer.apply_gradients()
-
+        self.optimizer.apply_gradients(zip(grads_enc, self.encoder.trainable_weights))
         # B) Then apply the gradient to the decoder. use self.optimizer.apply_gradients()
-        
-        # Combine grads and variables
-        grads = grads_enc + grads_dec
-        vars_ = self.encoder.trainable_variables + self.decoder.trainable_variables
-        
-        # Apply all gradients in one step
-        self.optimizer.apply_gradients(zip(grads, vars_))
-
-
+        self.optimizer.apply_gradients(zip(grads_dec, self.decoder.trainable_weights))          
         
         # [ 10. ] Update the running means of the losses
         #  To simplify we provide this code for you 
@@ -568,6 +474,7 @@ class VAE(tf.keras.Model):
         # will be printed in the progress bar.
         dictLosses = {loss.name: loss.result() for loss in self.metrics}
         return dictLosses
+
 
     def get_config(self):
         # To allow saving and loading of a custom model, we need to implement a
@@ -583,9 +490,8 @@ class VAE(tf.keras.Model):
         # refers to the current class, and calling cls is equivalent to
         # instantiating the class.
         return cls(**config)
- 
-
-# ToImplement:  Note if the exercise3 wont run because exercise 5a,b (ConditionalVAE Below isnt complete yet, then simply comment out ConditionalVAE while doing exercise3)
+    
+    
 class ConditionalVAE(VAE):
     def __init__(self, 
                 n_latent_dims=8, 
@@ -593,6 +499,8 @@ class ConditionalVAE(VAE):
                 image_shape=(32, 32, 1),
                 kl_loss_weight=1.,
                 name='cvae', 
+                encoder_params = {},
+                decoder_params = {},
                 **kwargs):
     
 
@@ -617,11 +525,14 @@ class ConditionalVAE(VAE):
         super().__init__(n_latent_dims=n_latent_dims,
                          image_shape=image_shape,
                          kl_loss_weight=kl_loss_weight,
+                         encoder_params=encoder_params,
+                         decoder_params=decoder_params,
                          name=name,
                          **kwargs)
 
         print(f"Loaded version: {__name__}")
- 
+
+
 
     def make_conditional_input(self, images, labels):
         """Convert one-hot label vectors into a 3D tensor and concatenate to the image.
@@ -638,16 +549,19 @@ class ConditionalVAE(VAE):
         # Convert one-hot label vectors into a 3D tensor and concatenate to the image
         # this one is a bit tricky so we will develop it together.        
 
-        batch_size, height, width, _ = tf.unstack(tf.shape(images))
+        # 1. first we need to get the number of samples, height and width of the images 
+        n_samples = tf.shape(images)[0]
+        height = tf.shape(images)[1]
+        width = tf.shape(images)[2]
+        
+        # 2. next build a tensor containing the image labels for the current minibatch, which is stored in the variable, labels.
 
-        # Expand labels to shape: (batch, 1, 1, num_classes)
-        labels = tf.reshape(labels, (batch_size, 1, 1, self.n_classes))
-    
-        # Tile labels to (batch, height, width, num_classes)
-        labels_tiled = tf.tile(labels, (1, height, width, 1))
-    
-        # Concatenate along channel axis
-        return tf.concat([images, labels_tiled], axis=-1)
+        labels_tensor = tf.reshape(labels, [-1, 1, 1, self.n_classes])
+        ones_tensor = tf.ones([n_samples, height, width, self.n_classes])
+        labels_tensor = labels_tensor * ones_tensor
+        
+        # 3. Finally since the tensors are the same dimension along the last axis, we can concatenate them together. 
+        imagesConcatenatedWithPerPixelLabelVectors=tf.concat([images, labels_tensor], axis=-1)
         # ========================
 
 
@@ -693,6 +607,7 @@ class ConditionalVAE(VAE):
         decoder_inputs = tf.concat([z, classes], axis=-1)        
         recons = self.decoder(decoder_inputs, training=training)
 
+        # ========================
 
         return recons   # finally we return the reconstructed image, which is a primary output of a VAE.
     
@@ -706,86 +621,59 @@ class ConditionalVAE(VAE):
         Returns:
             dict: Loss values.
         """        
-        # Unpack the data ... for the ConditionalVAE we have both actual (real) images and their labels 
+
+        # ===== ToImplement  Exercise5b ====
+        #  Complete the cVAE model by implementing the custom training method, train_step()
         images_real, class_real = data[0]
         
-        # ===== ToImplement  Exercise5b ====        
-        # 1a. Expand the class labels into 3D tensors and concatenate to the channel 
-        # dimension of the images by calling your make_conditional_input. 
-        # Store the result in variable encoder_inputs
-       
+        # Expand the class labels into 3D tensors and concatenate to the channel
+        # dimension of the images
         encoder_inputs = self.make_conditional_input(images_real, class_real)
         
-        # 1b. Tell tensorflow to build a computational graph for the forward pass, so that gradients can be computed for us.
-        #    Therefore use tf.GradientTape(persistent=True) to start the beginning of a python runtime context using the "with" keyword.
-        #    Note the argument persistent=True is required to compute multiple gradients from a single GradientTape        
-        #    persistent=True is required to compute multiple gradients from a single GradientTape
-            
-            # Follow steps 2..7 from the VAE's train_step() however there are two parts *** that are different for the ConditionalVAE:            
+        # persistent=True is required to compute multiple gradients from a single GradientTape
+        with tf.GradientTape(persistent=True) as gt:
+            # Follow steps 2..7 from the VAE's train_step() however there are two parts that are different for the ConditionalVAE:            
             # Use encoder to predict probabilistic latent representations 
+            z_mean, z_logvar = self.encoder(encoder_inputs, training=True)
             
             # Sample a point from the latent distributions. 
+            z = sample_from_normal(z_mean, z_logvar)
             
-            # *** Step 3b: (new step) You will need to concatenate labels to latent representations
+            # Step 3b: (new step) You will need to concatenate labels to latent representations
+            z_conditional = tf.concat([z, class_real], axis=1)
 
-            # *** Step 4: Use decoder to reconstruct image from the concatenated result
+            # Step 4: Use decoder to reconstruct image from the concatenated result
+            recons = self.decoder(z_conditional, training=True)
 
             # Compute KL divergence loss between latent representations and the prior
+            kl_loss = kl_divergence(z_mean, z_logvar)
             
             # Compute reconstruction loss
-
+            recon_loss_pixel = self.loss_recon(images_real, recons)
             # Recon loss is computed per pixel. Sum over the pixels and then
             # average across samples.
-            
-            # Sum the loss terms
-        with tf.GradientTape(persistent=True) as tape:
-        
-        # Step 4: Run encoder to get distribution parameters
-            z_mean, z_logvar = self.encoder(encoder_inputs, training=True)
-    
-            # Step 5: Sample latent vector z using the reparameterization trick
-            z = sample_from_normal(z_mean, z_logvar)
-    
-            # Step 6: Concatenate class labels to z for conditional decoding
-            decoder_inputs = tf.concat([z, class_real], axis=-1)
-    
-            # Step 7: Run decoder to reconstruct the image
-            recons = self.decoder(decoder_inputs, training=True)
-    
-            # Step 8: Compute KL divergence loss
-            kl_loss = kl_divergence(z_mean, z_logvar)
-    
-            # Step 9: Compute reconstruction loss (per-pixel MSE, summed per sample)
-            recon_loss_pixel = self.loss_recon(images_real, recons)
             recon_loss_sample = tf.reduce_sum(recon_loss_pixel, axis=(1, 2))
             recon_loss = tf.reduce_mean(recon_loss_sample)
-    
-            # Step 10: Combine losses
+            
+            # Sum the loss terms
             total_loss = recon_loss + self.kl_loss_weight * kl_loss
-
                        
         # Follow steps 8-10 from the VAE.train_step()
         # 8. Compute the gradients for each loss wrt their respectively model weights
+        grads_enc = gt.gradient(total_loss, self.encoder.trainable_weights)
+        grads_dec = gt.gradient(total_loss, self.decoder.trainable_weights)
         
         # 9. Apply the gradient descent steps to each submodel. The optimizer
         # attribute is created when model.compile(optimizer) is called by the
         # user.
+        self.optimizer.apply_gradients(zip(grads_enc, self.encoder.trainable_weights))
+        self.optimizer.apply_gradients(zip(grads_dec, self.decoder.trainable_weights))         
         
         # 10. Update the running means of the losses
-        
-        grads_enc = tape.gradient(total_loss, self.encoder.trainable_variables)
-        grads_dec = tape.gradient(total_loss, self.decoder.trainable_variables)
-    
-        # Step 12: Apply gradients to encoder and decoder weights
-        grads = grads_enc + grads_dec
-        vars_ = self.encoder.trainable_variables + self.decoder.trainable_variables
-        self.optimizer.apply_gradients(zip(grads, vars_))
-    
-        # Step 13: Update running metrics
         self.loss_recon_tracker.update_state(recon_loss)
         self.loss_kl_tracker.update_state(kl_loss)
         self.loss_total_tracker.update_state(total_loss)
-    
+        
         
         # [Given] Get the current values of these running means as a dict. These values
         # will be printed in the progress bar.
